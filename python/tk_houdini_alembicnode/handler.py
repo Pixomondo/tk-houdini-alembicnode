@@ -1,17 +1,21 @@
-# Copyright (c) 2015 Pixomondo
-#
+# Copyright (c) 2013 Shotgun Software Inc.
+# 
 # CONFIDENTIAL AND PROPRIETARY
-#
-# This work is provided "AS IS" and subject to the MIT License included in this
-# distribution package. See LICENSE.
-# By accessing, using, copying or modifying this work you indicate your
-# agreement to the MIT License. All rights
-# not expressly granted therein are reserved by Pixomondo.
+# 
+# This work is provided "AS IS" and subject to the Shotgun Pipeline Toolkit 
+# Source Code License included in this distribution package. See LICENSE.
+# By accessing, using, copying or modifying this work you indicate your 
+# agreement to the Shotgun Pipeline Toolkit Source Code License. All rights 
+# not expressly granted therein are reserved by Shotgun Software Inc.
 
+import base64
 import os
+import pickle
 import sys
+import zlib
 
 import hou
+
 import sgtk
 
 
@@ -192,8 +196,10 @@ class ToolkitAlembicNodeHandler(object):
             # Copy inputs and move outputs
             self.__copy_color(sg_n, new_n)
             self.__copy_inputs_to_node(sg_n, new_n)
-            if is_sop:
+            if is_rop:
                 self.__move_outputs_to_node(sg_n, new_n)
+            elif is_sop:
+                self.__move_outputs_from_node_to_user_data(sg_n, new_n)
 
             # delete original node:
             sg_n.destroy()
@@ -475,3 +481,56 @@ class ToolkitAlembicNodeHandler(object):
         for connection in output_connections:
             node = connection.outputNode()
             node.setInput(connection.inputIndex(), target)
+
+    def __move_outputs_from_node_to_user_data(self, node, target):
+        """Saves output connections into user data of target node.
+        Needed when target node doesn't have outputs.
+        """
+        output_connections = node.outputConnections()
+
+        if not output_connections:
+            return
+
+        outputs = []
+        for connection in output_connections:
+            output_dict = {}
+            output_dict['node'] = connection.outputNode().path()
+            output_dict['input'] = connection.inputIndex()
+            outputs.append(output_dict)
+
+        self._set_compressed_json(target, 'tk_output_connections', outputs)
+
+    def __move_outputs_from_user_data_to_node(self, node, target):
+        """ Move all the output connections from this node to the
+            target node.
+        """
+        outputs = self._get_compressed_json(node, 'tk_output_connections')
+
+        if not outputs:
+            return
+
+        for connection in outputs:
+            node = hou.node(connection['node'])
+            node.setInput(connection['input'], target)
+
+    def _set_compressed_json(self, node, key, data):
+        """Save python structures (like list or dictionary) as json string in
+        user data of a node.
+        """
+        self._app.log_debug(node)
+
+        data = pickle.dumps(data)
+        data_string = 'sgtk-01:' + base64.b64encode(zlib.compress(data))
+
+        node.setUserData(key, data_string)
+
+    def _get_compressed_json(self, node, key):
+        """Returns the python structure from a decompressed json string.
+        """
+        self._app.log_debug(node)
+
+        str_data = node.userData(key)
+        if str_data is None:
+            return None
+        str_ = zlib.decompress(base64.b64decode(str_data[7:]))
+        return pickle.loads(str_)
